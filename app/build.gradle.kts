@@ -20,6 +20,16 @@ android {
     }
 
     signingConfigs {
+        // A committed debug key (throwaway, password "android") so every debug build — local or CI —
+        // signs identically. Without it each CI run mints a fresh debug key, so the debug APK can't
+        // update the one already installed and every test needs an uninstall (which on a TCL TV also
+        // resets the app's auto-start grant). A fixed key lets `install -r` update in place.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("upload") {
             // Populated from environment variables in CI. Absent locally, which is why the
             // release build type falls back to the debug key below.

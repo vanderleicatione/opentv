@@ -36,6 +36,13 @@ data class StremioStream(
     val title: String,
     /** Which add-on produced this, for grouping in the picker. */
     val addonName: String,
+    /**
+     * Request headers the add-on says this stream needs (its `behaviorHints.proxyHeaders.request`).
+     * Live-TV add-ons routinely require a specific `User-Agent` (e.g. a VLC string) and the CDN
+     * answers 403 without it — the usual cause of a channel that "doesn't work". Empty when the
+     * add-on set none.
+     */
+    val headers: Map<String, String> = emptyMap(),
 )
 
 /**

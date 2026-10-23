@@ -13,6 +13,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -72,7 +73,14 @@ class StremioClient(
                 ?: return@mapNotNull null // infoHash-only (raw torrent) — skipped on purpose
             val label = (s["title"] ?: s["name"])?.jsonPrimitive?.contentOrNull
                 ?.replace('\n', ' ')?.trim()?.takeIf { it.isNotBlank() } ?: "Stream"
-            StremioStream(url = streamUrl, title = label, addonName = addonName)
+            // behaviorHints.proxyHeaders.request — the headers the add-on wants on the stream
+            // request (commonly a VLC User-Agent for live CDNs). Passed through to the player.
+            val requestHeaders = (s["behaviorHints"] as? JsonObject)
+                ?.get("proxyHeaders")?.let { it as? JsonObject }
+                ?.get("request")?.let { it as? JsonObject }
+                ?.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.contentOrNull?.let { k to it } }
+                ?.toMap().orEmpty()
+            StremioStream(url = streamUrl, title = label, addonName = addonName, headers = requestHeaders)
         }
     }
 

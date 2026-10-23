@@ -98,28 +98,34 @@ class OpenTvInputService : TvInputService() {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
-                val (url, userAgent) = withContext(Dispatchers.IO) {
+                val resolved: Pair<String, Map<String, String>>? = withContext(Dispatchers.IO) {
                     if (data.startsWith(TifSync.STREMIO_PREFIX + TifSync.SEP)) {
                         // Stremio channel: stremio<SEP>manifestUrl<SEP>addonName<SEP>channelId.
                         // Resolve the playable URL on demand via the add-on's stream resource.
                         val p = data.split(TifSync.SEP)
                         if (p.size < 4) return@withContext null
-                        val stream = graph.stremioClient.streams(p[1], p[2], "tv", p[3]).firstOrNull()
-                            ?: return@withContext null
-                        stream.url to Source.DEFAULT_USER_AGENT
+                        val streams = graph.stremioClient.streams(p[1], p[2], "tv", p[3])
+                        // Skip options the add-on marked offline; fall back to the first if all are.
+                        val stream = streams.firstOrNull { !it.title.contains("[OFFLINE]", ignoreCase = true) }
+                            ?: streams.firstOrNull() ?: return@withContext null
+                        // Use the stream's own request headers (e.g. its required VLC User-Agent);
+                        // only when it supplies none do we fall back to our default User-Agent.
+                        val headers = stream.headers.ifEmpty { mapOf("User-Agent" to Source.DEFAULT_USER_AGENT) }
+                        stream.url to headers
                     } else {
                         val channel = data.toLongOrNull()
                             ?.let { graph.database.channels().byId(it) } ?: return@withContext null
                         val source = graph.database.sources().byId(channel.sourceId)
                         graph.catalogRepository.resolvePlaybackUrl(channel, source) to
-                            (source?.userAgent ?: Source.DEFAULT_USER_AGENT)
+                            mapOf("User-Agent" to (source?.userAgent ?: Source.DEFAULT_USER_AGENT))
                     }
-                } ?: run {
+                }
+                val (url, headers) = resolved ?: run {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
 
-                httpFactory.setDefaultRequestProperties(mapOf("User-Agent" to userAgent))
+                httpFactory.setDefaultRequestProperties(headers)
                 player.setMediaItem(MediaItem.fromUri(url))
                 player.prepare()
             }
