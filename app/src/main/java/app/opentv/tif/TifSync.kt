@@ -101,10 +101,22 @@ object TifSync {
             }
         }.getOrElse { Log.w(TAG, "stremio catalogue read failed", it); emptyList() }
 
-        runCatching {
-            // Deleting a channel cascades to its programmes in the TV provider, so clearing this
-            // input's channels clears its whole guide in one call — no separate Programs delete.
-            resolver.delete(channelsForInput(inputId), null, null)
+        Log.i(
+            TAG,
+            "TIF sync: ${channels.size} db channel(s), " +
+                "${graph.settings.stremioAddons.value.size} stremio addon(s), " +
+                "${stremioChannels.size} stremio channel(s)",
+        )
+
+        // All the provider writes run on IO, never the caller's thread. The setup activity calls
+        // this from its main-thread lifecycle scope, and doing thousands of inserts there blocks the
+        // UI long enough that this aggressive TV (TCL "tguard") backgrounds and kills the process
+        // mid-sync — exactly what left the input with zero channels.
+        withContext(Dispatchers.IO) {
+            runCatching {
+                // Deleting a channel cascades to its programmes in the TV provider, so clearing this
+                // input's channels clears its whole guide in one call — no separate Programs delete.
+                resolver.delete(channelsForInput(inputId), null, null)
 
             var number = 0
             var published = 0
@@ -154,9 +166,10 @@ object TifSync {
                 published += resolver.bulkInsert(TvContract.Channels.CONTENT_URI, stremioRows)
             }
 
-            Log.i(TAG, "Published $published channels to Live Channels (${stremioChannels.size} via Stremio)")
-            published
-        }.getOrElse { Log.w(TAG, "TIF sync failed", it); 0 }
+                Log.i(TAG, "Published $published channels to Live Channels (${stremioChannels.size} via Stremio)")
+                published
+            }.getOrElse { Log.w(TAG, "TIF sync failed", it); 0 }
+        }
     }
 
     /** The columns every channel row shares; callers add COLUMN_INTERNAL_PROVIDER_DATA. */
