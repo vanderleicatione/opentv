@@ -65,6 +65,9 @@ class SyncWorker(
         // Book any newly-revealed series-link airings from this fresh guide.
         runCatching { graph.recordingEngine.rescanSeriesRules() }
 
+        // Mirror the refreshed channels + guide into Live Channels (no-ops off a TV box).
+        runCatching { app.opentv.tif.TifSync.sync(applicationContext) }
+
         // A partial failure is still a retry — but the user keeps everything already on disk.
         return if (anyFailed) Result.retry() else Result.success()
     }

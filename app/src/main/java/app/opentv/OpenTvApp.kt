@@ -108,6 +108,10 @@ class OpenTvApp : Application(), ImageLoaderFactory {
             // itself on and download the first time — without waiting for the user to find
             // the refresh button. ensureFeeds + auto-enable-by-region + matcher all live here.
             graph.epgRepository.syncAll(System.currentTimeMillis(), force = false)
+
+            // Keep the Live Channels guide in step with what the app just synced, so a box that
+            // added the OpenTV input sees fresh channels/EPG on launch. No-ops off a TV device.
+            runCatching { app.opentv.tif.TifSync.sync(this@OpenTvApp) }
         }
     }
 }

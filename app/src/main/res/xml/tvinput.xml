@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  This file is part of OpenTV.
+  Copyright (C) 2026 The OpenTV Contributors
+  Licensed under the GNU General Public License v3.0 or later.
+
+  TV Input Framework metadata. `setupActivity` is what Live Channels launches to add the input;
+  it is the one required attribute. The input is a software/IPTV input (no physical tuner), so
+  no tuner count or HDMI attributes are declared.
+-->
+<tv-input xmlns:android="http://schemas.android.com/apk/res/android"
+    android:setupActivity="app.opentv.tif.OpenTvSetupActivity" />

@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">OpenTV</string>
+    <string name="tif_setup_adding">Adding OpenTV channels to Live Channels…</string>
 
     <!-- ============================ Common / reused ============================ -->
     <string name="common_done">Done</string>

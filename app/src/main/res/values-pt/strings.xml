@@ -2,6 +2,7 @@
 <!-- OpenTV UI translation. Auto-assembled; English fallback for any gap. -->
 <resources>
     <string name="app_name">OpenTV</string>
+    <string name="tif_setup_adding">Adicionando canais do OpenTV ao Live Channels…</string>
     <string name="common_done">Concluído</string>
     <string name="common_cancel">Cancelar</string>
     <string name="common_back">Voltar</string>

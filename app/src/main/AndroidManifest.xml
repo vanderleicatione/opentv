@@ -40,6 +40,13 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
+      Lets OpenTV write its channels and guide into the system TV provider, so they appear inside
+      Live Channels in the same grid as the antenna and broadcast inputs (see app.opentv.tif).
+      Only our own input's rows are ever touched.
+    -->
+    <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA" />
+
+    <!--
       Declared not-required so the same APK installs on phones, tablets, Android TV and
       Fire TV. Shipping separate builds per form factor is a maintenance tax a volunteer
       project cannot afford.
@@ -123,6 +130,28 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!--
+          TV Input Framework input. Live Channels binds this service to play an OpenTV channel the
+          user tuned to, and launches the setup activity to add/re-scan the input. BIND_TV_INPUT
+          restricts binding to the system, as the framework requires.
+        -->
+        <service
+            android:name=".tif.OpenTvInputService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TV_INPUT">
+            <intent-filter>
+                <action android:name="android.media.tv.TvInputService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.media.tv.input"
+                android:resource="@xml/tvinput" />
+        </service>
+
+        <activity
+            android:name=".tif.OpenTvSetupActivity"
+            android:exported="true"
+            android:theme="@style/Theme.OpenTV" />
 
         <!-- Serves the downloaded update APK to the system installer via a content:// uri. -->
         <provider
