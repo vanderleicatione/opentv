@@ -139,15 +139,19 @@ object TifSync {
                 resolver.bulkInsert(TvContract.Programs.CONTENT_URI, rows)
             }
 
-            // Stremio channels: no XMLTV guide exists for them, so they are published without
-            // programmes — they appear in the grid, tune and play, but show no "now/next".
-            stremioChannels.forEach { ch ->
+            // Stremio channels: no XMLTV guide exists for them, so they carry no programmes, which
+            // means we never need their row ids back — so they go in one bulkInsert instead of a
+            // per-row insert. A single add-on catalogue can be hundreds or thousands of channels,
+            // where row-at-a-time would crawl.
+            val stremioRows = stremioChannels.map { ch ->
                 number++
                 val key = "$STREMIO_PREFIX$SEP${ch.addonManifestUrl}$SEP${ch.addonName}$SEP${ch.id}"
-                val channelValues = channelRow(inputId, number, ch.name).apply {
+                channelRow(inputId, number, ch.name).apply {
                     put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, key.toByteArray())
                 }
-                if (resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) != null) published++
+            }.toTypedArray()
+            if (stremioRows.isNotEmpty()) {
+                published += resolver.bulkInsert(TvContract.Channels.CONTENT_URI, stremioRows)
             }
 
             Log.i(TAG, "Published $published channels to Live Channels (${stremioChannels.size} via Stremio)")
