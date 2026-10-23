@@ -160,7 +160,7 @@
         -->
         <service
             android:name=".tif.TifSyncService"
-            android:exported="false" />
+            android:exported="true" />
 
         <!-- Serves the downloaded update APK to the system installer via a content:// uri. -->
         <provider
