@@ -7,6 +7,7 @@ package app.opentv.tif
 
 import android.content.Context
 import android.media.tv.TvContract
+import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
 import android.net.Uri
 import android.util.Log
@@ -44,6 +45,7 @@ class OpenTvInputService : TvInputService() {
 
     override fun onCreateSession(inputId: String): Session = OpenTvSession(applicationContext)
 
+    @OptIn(UnstableApi::class)
     private class OpenTvSession(private val context: Context) : Session(context) {
 
         private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -69,7 +71,7 @@ class OpenTvInputService : TvInputService() {
 
                         override fun onPlayerError(error: PlaybackException) {
                             Log.w(TAG, "playback error", error)
-                            notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                         }
                     })
                     playWhenReady = true
@@ -88,12 +90,12 @@ class OpenTvInputService : TvInputService() {
         }
 
         override fun onTune(channelUri: Uri): Boolean {
-            notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_TUNING)
+            notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
             tuneJob?.cancel()
             tuneJob = scope.launch {
                 val channelId = internalIdOf(channelUri)
                 if (channelId == null) {
-                    notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
                 val (url, userAgent) = withContext(Dispatchers.IO) {
@@ -102,7 +104,7 @@ class OpenTvInputService : TvInputService() {
                     val resolved = graph.catalogRepository.resolvePlaybackUrl(channel, source)
                     resolved to (source?.userAgent ?: Source.DEFAULT_USER_AGENT)
                 } ?: run {
-                    notifyVideoUnavailable(VIDEO_UNAVAILABLE_REASON_UNKNOWN)
+                    notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
 
