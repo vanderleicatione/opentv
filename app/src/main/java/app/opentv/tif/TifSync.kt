@@ -15,8 +15,10 @@ import android.net.Uri
 import android.util.Log
 import app.opentv.core.ServiceLocator
 import app.opentv.data.model.shownName
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Publishes OpenTV's live channels and their guide into the system **TV Input Framework** so they
@@ -48,6 +50,15 @@ object TifSync {
 
     /** How far ahead to publish programmes per channel. Live Channels only needs "now + next few". */
     private const val PROGRAMMES_PER_CHANNEL = 50
+
+    /**
+     * How a channel row's [TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA] encodes its origin so
+     * onTune can play it back. A plain decimal is a Room `channels` row id (Xtream/M3U/Stalker). A
+     * value starting with [STREMIO_PREFIX] is a Stremio add-on channel, as
+     * `stremio<SEP>manifestUrl<SEP>addonName<SEP>channelId`, resolved to a URL at tune time.
+     */
+    const val STREMIO_PREFIX = "stremio"
+    const val SEP = '\u001f' // unit separator — never appears in a URL or channel id
 
     /** One sync at a time: the app-start trigger and the periodic worker can both fire this. */
     private val lock = Mutex()
@@ -81,34 +92,41 @@ object TifSync {
             .getOrElse { Log.w(TAG, "channel read failed", it); return 0 }
             .filter { !it.hidden }
 
+        // Stremio add-ons live outside the channels table (they are a browse surface, not a
+        // SourceKind), so their `tv` catalogues are fetched here and mirrored too. Best-effort and
+        // off the delete path: a flaky add-on yields an empty list, never an aborted sync.
+        val stremioChannels = runCatching {
+            withContext(Dispatchers.IO) {
+                graph.settings.stremioAddons.value.flatMap { graph.stremioClient.tvChannels(it) }
+            }
+        }.getOrElse { Log.w(TAG, "stremio catalogue read failed", it); emptyList() }
+
         runCatching {
             // Deleting a channel cascades to its programmes in the TV provider, so clearing this
             // input's channels clears its whole guide in one call — no separate Programs delete.
             resolver.delete(channelsForInput(inputId), null, null)
 
+            var number = 0
             var published = 0
-            channels.forEachIndexed { index, channel ->
-                val channelValues = ContentValues().apply {
-                    put(TvContract.Channels.COLUMN_INPUT_ID, inputId)
-                    put(TvContract.Channels.COLUMN_SERVICE_TYPE, TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO)
-                    put(TvContract.Channels.COLUMN_TYPE, TvContract.Channels.TYPE_OTHER)
-                    put(TvContract.Channels.COLUMN_DISPLAY_NUMBER, (channel.number ?: index + 1).toString())
-                    put(TvContract.Channels.COLUMN_DISPLAY_NAME, channel.shownName)
-                    // Our own id, so onTune can map the framework's channel Uri back to a Channel row.
-                    // COLUMN_INTERNAL_PROVIDER_DATA (a BLOB) exists since API 21; the tidier
-                    // COLUMN_INTERNAL_PROVIDER_ID only arrived in API 26, and minSdk here is 23.
-                    put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channel.id.toString().toByteArray())
-                }
-                val channelUri = resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) ?: return@forEachIndexed
-                val channelRowId = ContentUris.parseId(channelUri)
+            channels.forEach { channel ->
+                number++
+                val channelValues = channelRow(inputId, channel.number ?: number, channel.shownName)
+                    .apply {
+                        // Our own id, so onTune can map the framework's channel Uri back to a Channel
+                        // row. COLUMN_INTERNAL_PROVIDER_DATA (a BLOB) exists since API 21; the tidier
+                        // COLUMN_INTERNAL_PROVIDER_ID only arrived in API 26, and minSdk here is 23.
+                        put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channel.id.toString().toByteArray())
+                    }
+                val channelUri = resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) ?: return@forEach
                 published++
 
-                val epgId = channel.epgCandidates.firstOrNull() ?: return@forEachIndexed
+                val epgId = channel.epgCandidates.firstOrNull() ?: return@forEach
                 val programmes = runCatching {
                     graph.database.programmes().upcoming(epgId, now, PROGRAMMES_PER_CHANNEL)
                 }.getOrDefault(emptyList())
-                if (programmes.isEmpty()) return@forEachIndexed
+                if (programmes.isEmpty()) return@forEach
 
+                val channelRowId = ContentUris.parseId(channelUri)
                 val rows = programmes.map { p ->
                     ContentValues().apply {
                         put(TvContract.Programs.COLUMN_CHANNEL_ID, channelRowId)
@@ -120,10 +138,32 @@ object TifSync {
                 }.toTypedArray()
                 resolver.bulkInsert(TvContract.Programs.CONTENT_URI, rows)
             }
-            Log.i(TAG, "Published $published channels to Live Channels")
+
+            // Stremio channels: no XMLTV guide exists for them, so they are published without
+            // programmes — they appear in the grid, tune and play, but show no "now/next".
+            stremioChannels.forEach { ch ->
+                number++
+                val key = "$STREMIO_PREFIX$SEP${ch.addonManifestUrl}$SEP${ch.addonName}$SEP${ch.id}"
+                val channelValues = channelRow(inputId, number, ch.name).apply {
+                    put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, key.toByteArray())
+                }
+                if (resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) != null) published++
+            }
+
+            Log.i(TAG, "Published $published channels to Live Channels (${stremioChannels.size} via Stremio)")
             published
         }.getOrElse { Log.w(TAG, "TIF sync failed", it); 0 }
     }
+
+    /** The columns every channel row shares; callers add COLUMN_INTERNAL_PROVIDER_DATA. */
+    private fun channelRow(inputId: String, number: Int, name: String): ContentValues =
+        ContentValues().apply {
+            put(TvContract.Channels.COLUMN_INPUT_ID, inputId)
+            put(TvContract.Channels.COLUMN_SERVICE_TYPE, TvContract.Channels.SERVICE_TYPE_AUDIO_VIDEO)
+            put(TvContract.Channels.COLUMN_TYPE, TvContract.Channels.TYPE_OTHER)
+            put(TvContract.Channels.COLUMN_DISPLAY_NUMBER, number.toString())
+            put(TvContract.Channels.COLUMN_DISPLAY_NAME, name)
+        }
 
     /** Channels belonging to this input. */
     private fun channelsForInput(inputId: String): Uri =

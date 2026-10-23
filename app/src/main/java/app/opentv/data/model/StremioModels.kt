@@ -37,3 +37,20 @@ data class StremioStream(
     /** Which add-on produced this, for grouping in the picker. */
     val addonName: String,
 )
+
+/**
+ * A live channel discovered in a Stremio add-on's `tv` catalogue — the raw material for mirroring
+ * an add-on's live channels into Live Channels via the TV Input Framework. Unlike [StremioStream],
+ * this is only the channel's identity; its playable URL is resolved on demand at tune time with the
+ * add-on's `stream` resource (see TifSync / OpenTvInputService), the same just-in-time pattern
+ * Stalker uses.
+ */
+data class StremioLiveChannel(
+    /** The add-on's own id for this channel, passed back to its `stream` resource. */
+    val id: String,
+    val name: String,
+    val logo: String?,
+    /** The add-on this came from — needed to resolve the stream later. */
+    val addonManifestUrl: String,
+    val addonName: String,
+)

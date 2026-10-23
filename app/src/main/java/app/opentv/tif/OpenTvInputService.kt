@@ -93,16 +93,27 @@ class OpenTvInputService : TvInputService() {
             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_TUNING)
             tuneJob?.cancel()
             tuneJob = scope.launch {
-                val channelId = internalIdOf(channelUri)
-                if (channelId == null) {
+                val data = internalDataOf(channelUri)
+                if (data == null) {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
                 val (url, userAgent) = withContext(Dispatchers.IO) {
-                    val channel = graph.database.channels().byId(channelId) ?: return@withContext null
-                    val source = graph.database.sources().byId(channel.sourceId)
-                    val resolved = graph.catalogRepository.resolvePlaybackUrl(channel, source)
-                    resolved to (source?.userAgent ?: Source.DEFAULT_USER_AGENT)
+                    if (data.startsWith(TifSync.STREMIO_PREFIX + TifSync.SEP)) {
+                        // Stremio channel: stremio<SEP>manifestUrl<SEP>addonName<SEP>channelId.
+                        // Resolve the playable URL on demand via the add-on's stream resource.
+                        val p = data.split(TifSync.SEP)
+                        if (p.size < 4) return@withContext null
+                        val stream = graph.stremioClient.streams(p[1], p[2], "tv", p[3]).firstOrNull()
+                            ?: return@withContext null
+                        stream.url to Source.DEFAULT_USER_AGENT
+                    } else {
+                        val channel = data.toLongOrNull()
+                            ?.let { graph.database.channels().byId(it) } ?: return@withContext null
+                        val source = graph.database.sources().byId(channel.sourceId)
+                        graph.catalogRepository.resolvePlaybackUrl(channel, source) to
+                            (source?.userAgent ?: Source.DEFAULT_USER_AGENT)
+                    }
                 } ?: run {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
@@ -123,15 +134,15 @@ class OpenTvInputService : TvInputService() {
             player.release()
         }
 
-        /** Read back the OpenTV channel id we stored in the channel row at sync time. */
-        private fun internalIdOf(channelUri: Uri): Long? =
+        /** Read back the origin key we stored in the channel row at sync time (see TifSync). */
+        private fun internalDataOf(channelUri: Uri): String? =
             context.contentResolver.query(
                 channelUri,
                 arrayOf(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA),
                 null, null, null,
             )?.use { c ->
                 if (!c.moveToFirst()) return null
-                c.getBlob(0)?.let { String(it).toLongOrNull() }
+                c.getBlob(0)?.let { String(it) }
             }
     }
 

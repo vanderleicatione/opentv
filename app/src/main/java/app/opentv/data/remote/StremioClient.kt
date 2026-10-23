@@ -6,9 +6,13 @@
 package app.opentv.data.remote
 
 import android.util.Log
+import app.opentv.data.model.StremioAddon
+import app.opentv.data.model.StremioLiveChannel
 import app.opentv.data.model.StremioStream
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -71,6 +75,44 @@ class StremioClient(
             StremioStream(url = streamUrl, title = label, addonName = addonName)
         }
     }
+
+    /**
+     * The live channels an add-on offers: every entry of each of its `tv` catalogues. Reads the
+     * manifest for the catalogue ids, then pulls the first page of each (metas → channels). Only the
+     * default page is fetched — enough for a channel list; add-ons paginate with `skip`, which we do
+     * not follow here.
+     *
+     * shortcut: first catalogue page only, no skip-paging; revisit if an add-on's tv catalogue is
+     * larger than one page and the tail matters.
+     */
+    fun tvChannels(addon: StremioAddon): List<StremioLiveChannel> {
+        val manifestUrl = addon.manifestUrl.trim()
+        val base = manifestUrl.removeSuffix("manifest.json").trimEnd('/')
+        val manifest = (get(manifestUrl.toHttpUrlOrNull() ?: return emptyList()) as? JsonObject) ?: return emptyList()
+
+        val tvCatalogIds = (manifest["catalogs"] as? JsonArray).orEmpty().mapNotNull { element ->
+            val c = element as? JsonObject ?: return@mapNotNull null
+            if (c["type"]?.jsonPrimitive?.contentOrNull != "tv") return@mapNotNull null
+            c["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        }
+
+        // De-dup by channel id: the same channel can appear in more than one catalogue (e.g. "Todos").
+        val out = LinkedHashMap<String, StremioLiveChannel>()
+        for (catId in tvCatalogIds) {
+            val metas = (get("$base/catalog/tv/$catId.json".toHttpUrlOrNull() ?: continue) as? JsonObject)
+                ?.get("metas") as? JsonArray ?: continue
+            for (element in metas) {
+                val m = element as? JsonObject ?: continue
+                val id = m["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: continue
+                val name = m["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: id
+                val logo = (m["poster"] ?: m["logo"])?.jsonPrimitive?.contentOrNull
+                out.getOrPut(id) { StremioLiveChannel(id, name, logo, manifestUrl, addon.name) }
+            }
+        }
+        return out.values.toList()
+    }
+
+    private fun JsonArray?.orEmpty(): List<JsonElement> = this ?: emptyList()
 
     private fun get(url: HttpUrl): JsonElement? {
         val request = Request.Builder().url(url).header("User-Agent", "OpenTV").build()
