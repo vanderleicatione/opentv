@@ -6,35 +6,25 @@
 package app.opentv.tif
 
 import android.os.Bundle
-import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.lifecycle.lifecycleScope
-import app.opentv.R
-import kotlinx.coroutines.launch
 
 /**
  * The activity Live Channels opens when the user adds (or re-scans) the OpenTV input.
  *
  * The framework contract is only "return RESULT_OK once the input is ready". There is nothing for
- * the user to configure — the channels come from whatever sources they already set up in OpenTV —
- * so this just runs one sync, so the first batch of channels exists before Live Channels reads
- * them, and finishes. Everything after this stays fresh via the periodic worker and app start-up.
+ * the user to configure — the channels come from whatever sources they already set up in OpenTV.
+ *
+ * It does NOT run the sync in its own scope: on aggressive TVs the activity is backgrounded and
+ * killed the instant it returns, which would cancel a sync mid-flight. Instead it kicks off
+ * [TifSyncService] — a foreground service that outlives this activity — and returns at once. The
+ * channels appear a few seconds later when the service finishes; Live Channels picks them up.
  */
 class OpenTvSetupActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(
-            TextView(this).apply {
-                text = getString(R.string.tif_setup_adding)
-                textSize = 20f
-                setPadding(64, 64, 64, 64)
-            },
-        )
-        lifecycleScope.launch {
-            TifSync.sync(applicationContext)
-            setResult(RESULT_OK)
-            finish()
-        }
+        TifSyncService.start(applicationContext)
+        setResult(RESULT_OK)
+        finish()
     }
 }

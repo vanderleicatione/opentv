@@ -153,6 +153,15 @@
             android:exported="true"
             android:theme="@style/Theme.OpenTV" />
 
+        <!--
+          Runs a Live Channels sync as a foreground service so it survives aggressive TV power
+          managers (e.g. TCL "tguard") that kill backgrounded apps mid-sync. No foregroundServiceType
+          is declared: the target boxes are Android 11/12, where a plain foreground service needs none.
+        -->
+        <service
+            android:name=".tif.TifSyncService"
+            android:exported="false" />
+
         <!-- Serves the downloaded update APK to the system installer via a content:// uri. -->
         <provider
             android:name="androidx.core.content.FileProvider"
