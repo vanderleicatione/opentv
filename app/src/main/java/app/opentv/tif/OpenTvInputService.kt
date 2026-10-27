@@ -9,13 +9,17 @@ import android.content.Context
 import android.media.tv.TvContract
 import android.media.tv.TvInputManager
 import android.media.tv.TvInputService
+import android.media.tv.TvTrackInfo
 import android.net.Uri
 import android.util.Log
 import android.view.Surface
 import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -73,6 +77,11 @@ class OpenTvInputService : TvInputService() {
                             Log.w(TAG, "playback error", error)
                             notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                         }
+
+                        // Live Channels routes audio through the track the input marks selected. If
+                        // we never report tracks, the host plays video but stays muted — report the
+                        // player's tracks on every change and select the active audio/video one.
+                        override fun onTracksChanged(tracks: Tracks) = reportTracks(tracks)
                     })
                     playWhenReady = true
                 }
@@ -122,6 +131,40 @@ class OpenTvInputService : TvInputService() {
 
         // Captions and parental controls are handled by the stream/player itself; nothing to do.
         override fun onSetCaptionEnabled(enabled: Boolean) {}
+
+        /** Hand the player's audio/video tracks to the host and mark the active ones selected. */
+        private fun reportTracks(tracks: Tracks) {
+            val infos = ArrayList<TvTrackInfo>()
+            var audioId: String? = null
+            var videoId: String? = null
+            tracks.groups.forEachIndexed { g, group ->
+                for (t in 0 until group.length) {
+                    if (!group.isTrackSupported(t)) continue
+                    val f = group.getTrackFormat(t)
+                    val id = "$g:$t"
+                    when (group.type) {
+                        C.TRACK_TYPE_AUDIO -> {
+                            infos += TvTrackInfo.Builder(TvTrackInfo.TYPE_AUDIO, id).apply {
+                                if (f.channelCount != Format.NO_VALUE) setAudioChannelCount(f.channelCount)
+                                if (f.sampleRate != Format.NO_VALUE) setAudioSampleRate(f.sampleRate)
+                                f.language?.let { setLanguage(it) }
+                            }.build()
+                            if (group.isTrackSelected(t)) audioId = id
+                        }
+                        C.TRACK_TYPE_VIDEO -> {
+                            infos += TvTrackInfo.Builder(TvTrackInfo.TYPE_VIDEO, id).apply {
+                                if (f.width != Format.NO_VALUE) setVideoWidth(f.width)
+                                if (f.height != Format.NO_VALUE) setVideoHeight(f.height)
+                            }.build()
+                            if (group.isTrackSelected(t)) videoId = id
+                        }
+                    }
+                }
+            }
+            notifyTracksChanged(infos)
+            audioId?.let { notifyTrackSelected(TvTrackInfo.TYPE_AUDIO, it) }
+            videoId?.let { notifyTrackSelected(TvTrackInfo.TYPE_VIDEO, it) }
+        }
 
         override fun onRelease() {
             tuneJob?.cancel()

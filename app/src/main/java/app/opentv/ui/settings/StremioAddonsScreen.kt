@@ -120,7 +120,10 @@ class StremioAddonsViewModel(app: Application) : AndroidViewModel(app) {
             if (result is CatalogRepository.SyncResult.Success) {
                 runCatching { graph.epgRepository.runMatcher() } // link the new channels to the guide
             }
-            runCatching { app.opentv.tif.TifSync.sync(getApplication<Application>()) }
+            // Publish to Live Channels via the foreground service, not TifSync.sync() inline: on the
+            // TGuard TVs this viewModelScope dies when the screen leaves the front, killing the sync
+            // mid-programme-insert so channels land but the guide doesn't. The service outlives us.
+            runCatching { app.opentv.tif.TifSyncService.start(getApplication<Application>()) }
             _refresh.value = when (result) {
                 is CatalogRepository.SyncResult.Success -> Refresh.Done(result.channelCount)
                 is CatalogRepository.SyncResult.Failed -> Refresh.Failed(result.reason)
