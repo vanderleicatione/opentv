@@ -314,6 +314,19 @@ class EpgRepository(
         return matched to channels.size
     }
 
+    /**
+     * The normalised keys of guide channels that actually carry programmes — the set the add-on
+     * refresh intersects its channels against, so it loads only channels that have a guide. Call
+     * after [syncAll], once the feeds are downloaded.
+     */
+    suspend fun populatedGuideKeys(): Set<String> {
+        val populated = programmeDao.channelIdsWithProgrammes().toHashSet()
+        return aliasDao.all()
+            .filter { it.epgId in populated && it.normalizedKey.isNotEmpty() }
+            .map { it.normalizedKey }
+            .toHashSet()
+    }
+
     suspend fun setManualOverride(channelId: Long, epgId: String?) =
         channelDao.setEpgOverride(channelId, epgId)
 

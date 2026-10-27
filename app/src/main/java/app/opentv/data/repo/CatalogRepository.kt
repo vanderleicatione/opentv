@@ -826,7 +826,10 @@ class CatalogRepository(
      * (it trusts the add-on's [OFFLINE] marker); revisit if some channels need their own header or
      * the add-on lists stale links as online.
      */
-    suspend fun syncStremioAddons(nowUtcMillis: Long): SyncResult = withContext(Dispatchers.IO) {
+    suspend fun syncStremioAddons(
+        nowUtcMillis: Long,
+        onlyGuideKeys: Set<String>? = null,
+    ): SyncResult = withContext(Dispatchers.IO) {
         val addons = settings.stremioAddons.value
         if (addons.isEmpty()) return@withContext SyncResult.Failed("Nenhum add-on configurado.", null)
 
@@ -845,6 +848,8 @@ class CatalogRepository(
                 val theme = ChannelTheme.themeOf(name)
                 if (theme in ChannelTheme.EXCLUDED) continue
                 val norm = ChannelNameNormalizer.normalize(name)
+                // EPG-first: when a guide-key set is supplied, keep only channels the guide has.
+                if (onlyGuideKeys != null && (norm.groupKey.isEmpty() || norm.groupKey !in onlyGuideKeys)) continue
                 val key = norm.groupKey.ifEmpty { ch.id }
                 val cur = best[key]
                 if (cur == null || norm.qualityRank > cur.rank) {

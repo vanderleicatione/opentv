@@ -108,13 +108,17 @@ class StremioAddonsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _refresh.value = Refresh.Running
             val now = System.currentTimeMillis()
-            val result = graph.catalogRepository.syncStremioAddons(now)
+            // EPG first: download the BR guides, then build the list from only the channels the guide
+            // has. If the guides fail (empty), fall back to loading everything rather than nothing.
+            val guideKeys = runCatching {
+                graph.epgRepository.enableBrazilFeeds()
+                graph.epgRepository.syncAll(now) // force=false: respects the 6h interval between presses
+                graph.epgRepository.populatedGuideKeys()
+            }.getOrDefault(emptySet())
+            val result = graph.catalogRepository
+                .syncStremioAddons(now, if (guideKeys.isEmpty()) null else guideKeys)
             if (result is CatalogRepository.SyncResult.Success) {
-                // Light up the EPG: turn on the free BR guides and match them to the new channels.
-                runCatching {
-                    graph.epgRepository.enableBrazilFeeds()
-                    graph.epgRepository.syncAll(now) // force=false: respects the 6h interval between presses
-                }
+                runCatching { graph.epgRepository.runMatcher() } // link the new channels to the guide
             }
             runCatching { app.opentv.tif.TifSync.sync(getApplication<Application>()) }
             _refresh.value = when (result) {
