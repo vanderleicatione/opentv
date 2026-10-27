@@ -132,6 +132,16 @@ class EpgRepository(
         }
     }
 
+    /** Turn on the Brazilian built-in guides — the add-on refresh calls this, since its list is BR. */
+    suspend fun enableBrazilFeeds() {
+        ensureFeeds()
+        for (feed in feedDao.all()) {
+            if (feed.builtIn && feed.name.startsWith("Brasil") && !feed.enabled) {
+                feedDao.setEnabled(feed.id, true)
+            }
+        }
+    }
+
     // ---- Sync ------------------------------------------------------------------------------
 
     /** Downloads every enabled feed, merges, prunes, and re-runs the matcher. */
@@ -376,6 +386,10 @@ class EpgRepository(
         )
 
         val BUILT_IN_FEEDS: List<Pair<String, String>> = listOf(
+            "Brasil — epgshare01" to
+                "https://epgshare01.online/epgshare01/epg_ripper_BR1.xml.gz",
+            "Brasil — BrazilTVEPG" to
+                "https://raw.githubusercontent.com/limaalef/BrazilTVEPG/refs/heads/main/epg.xml",
             "UK — Freeview (free-to-air)" to
                 "https://raw.githubusercontent.com/dp247/Freeview-EPG/master/epg.xml",
             "UK — epgshare01 (Sky lineup)" to

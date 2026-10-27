@@ -23,7 +23,10 @@ import app.opentv.data.model.Series
 import app.opentv.data.model.Source
 import app.opentv.data.model.SourceKind
 import app.opentv.data.model.StreamKind
+import app.opentv.data.model.StremioLiveChannel
+import app.opentv.data.model.StremioStream
 import app.opentv.data.parser.ChannelNameNormalizer
+import app.opentv.data.parser.ChannelTheme
 import app.opentv.data.parser.M3uParser
 import app.opentv.data.parser.VodTitleCleaner
 import app.opentv.data.remote.StalkerApi
@@ -32,7 +35,12 @@ import app.opentv.data.remote.TmdbClient
 import app.opentv.data.remote.XtreamApi
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -87,15 +95,11 @@ private const val STREMIO_SOURCE_URL = "stremio://addons"
 /** One User-Agent for every add-on channel — most live add-ons (e.g. Fenix) want a VLC UA. */
 private const val STREMIO_UA = "VLC/3.0.18 LibVLC/3.0.18"
 
-/**
- * "Canais abertos" (free-to-air broadcast) to drop from the add-on list, ported from the user's
- * atualizar.py "Abertos" group. Matched against the channel name, case-insensitive.
- */
-private val OPEN_CHANNELS = Regex(
-    "rede globo|\\bglobo\\b|rbs tv|\\brecord\\b(?! news)|\\bsbt\\b|\\bband\\b(?! ?sports)|redetv|rede tv|" +
-        "tv (brasil|cultura|gazeta|meio norte)|rede (minas|brasil)|\\btve\\b|amazon sat|\\bngt\\b",
-    RegexOption.IGNORE_CASE,
-)
+/** Fix-ups for names the add-on misspells, which otherwise break EPG groupKey matching. */
+private val NAME_FIXUPS = mapOf("Adult Swin" to "Adult Swim")
+
+/** Bounded in-flight stream resolutions: the add-on server sheds load above this, costing channels. */
+private const val STREMIO_CONCURRENCY = 8
 
 /**
  * Collapses obvious quality variants of the same film — "The Godfather 1972 HD" and
@@ -831,34 +835,108 @@ class CatalogRepository(
                 Source(name = "Add-ons", kind = SourceKind.M3U, url = STREMIO_SOURCE_URL, userAgent = STREMIO_UA),
             )
 
-        val channels = mutableListOf<Channel>()
-        val seen = HashSet<String>()
+        // 1. Collect, classify by theme, drop unwanted themes, and keep one entry per logical channel
+        //    (best quality) — all before any stream call, so far fewer links are resolved. groupKey
+        //    (from the normaliser) folds HD/SD/FHD variants of one channel together.
+        val best = LinkedHashMap<String, Pending>()
         for (addon in addons) {
             for (ch in runCatching { stremioClient.tvChannels(addon) }.getOrDefault(emptyList())) {
-                if (!seen.add(ch.id)) continue
-                if (OPEN_CHANNELS.containsMatchIn(ch.name)) continue // drop "canais abertos"
-                val stream = runCatching { stremioClient.streams(addon.manifestUrl, addon.name, "tv", ch.id) }
-                    .getOrDefault(emptyList())
-                    .firstOrNull { !it.title.contains("[OFFLINE]", ignoreCase = true) }
-                    ?: continue
-                channels += Channel(
-                    sourceId = sourceId,
-                    streamId = ch.id,
-                    name = ch.name,
-                    categoryId = null,
-                    logoUrl = ch.logo,
-                    epgChannelId = null,
-                    number = null,
-                    streamUrl = stream.url,
-                )
+                val name = fixupName(ch.name)
+                val theme = ChannelTheme.themeOf(name)
+                if (theme in ChannelTheme.EXCLUDED) continue
+                val norm = ChannelNameNormalizer.normalize(name)
+                val key = norm.groupKey.ifEmpty { ch.id }
+                val cur = best[key]
+                if (cur == null || norm.qualityRank > cur.rank) {
+                    best[key] = Pending(ch, name, theme, norm.qualityRank)
+                }
             }
         }
+        if (best.isEmpty()) return@withContext SyncResult.Failed("Nenhum canal após o filtro de temas.", null)
+
+        // 2. Resolve each kept channel to a direct URL, in parallel but bounded (the add-on server is
+        //    the bottleneck), then a second pass over the ones that errored — it often answers the
+        //    second time, when less loaded.
+        val firstPass = resolveAll(best.values.toList(), sourceId)
+        val toRetry = firstPass.filterIsInstance<Resolved.Errored>().map { it.pending }
+        val retried = if (toRetry.isEmpty()) emptyMap()
+            else resolveAll(toRetry, sourceId).associateBy { it.key }
+        val channels = firstPass.map { retried[it.key] ?: it }
+            .filterIsInstance<Resolved.Ok>()
+            .map { it.channel }
         if (channels.isEmpty()) return@withContext SyncResult.Failed("Nenhum canal resolvido dos add-ons.", null)
 
-        channelDao.replaceCatalogue(sourceId, normalized(channels, emptyMap()), nowUtcMillis)
+        // 3. Themes become categories so the host can group the channels.
+        val categories = channels.mapNotNull { it.categoryId }.distinct().map { theme ->
+            val order = ChannelTheme.ORDER.indexOf(theme)
+            Category(
+                id = theme, sourceId = sourceId, name = theme, kind = StreamKind.LIVE,
+                sortIndex = if (order < 0) ChannelTheme.ORDER.size else order,
+            )
+        }
+        categoryDao.upsertAll(categories)
+        val categoryNames = categories.associate { it.id to it.name }
+        channelDao.replaceCatalogue(sourceId, normalized(channels, categoryNames), nowUtcMillis)
         sourceDao.markCatalogSynced(sourceId, nowUtcMillis)
         SyncResult.Success(channels.size, 0, 0)
     }
+
+    /** One channel kept for resolution: the add-on entry, its fixed-up name, theme and quality rank. */
+    private data class Pending(
+        val ch: StremioLiveChannel,
+        val name: String,
+        val theme: String,
+        val rank: Int,
+    ) {
+        val key: String get() = ch.id
+    }
+
+    private sealed interface Resolved {
+        val key: String
+        data class Ok(override val key: String, val channel: Channel) : Resolved
+        data class NoStream(override val key: String) : Resolved
+        data class Errored(override val key: String, val pending: Pending) : Resolved
+    }
+
+    /** Resolve a batch to direct URLs, at most [STREMIO_CONCURRENCY] requests in flight. */
+    private suspend fun resolveAll(pending: List<Pending>, sourceId: Long): List<Resolved> = coroutineScope {
+        val gate = Semaphore(STREMIO_CONCURRENCY)
+        pending.map { p -> async { gate.withPermit { resolveOne(p, sourceId) } } }.awaitAll()
+    }
+
+    private fun resolveOne(p: Pending, sourceId: Long): Resolved {
+        val streams = runCatching {
+            stremioClient.streams(p.ch.addonManifestUrl, p.ch.addonName, "tv", p.ch.id)
+        }.getOrElse { return Resolved.Errored(p.key, p) }
+        val stream = pickBestStream(streams) ?: return Resolved.NoStream(p.key)
+        return Resolved.Ok(
+            p.key,
+            Channel(
+                sourceId = sourceId,
+                streamId = p.ch.id,
+                name = p.name,
+                categoryId = p.theme,
+                logoUrl = p.ch.logo,
+                epgChannelId = null,
+                number = null,
+                streamUrl = stream.url,
+            ),
+        )
+    }
+
+    /**
+     * Best stream for a channel: highest quality (FHD>HD>SD) among the non-[OFFLINE] options, falling
+     * back to the best of all options when every one is marked offline (the add-on's label is often
+     * wrong), else null. All options arrive in one response, so this costs no extra request.
+     */
+    private fun pickBestStream(streams: List<StremioStream>): StremioStream? {
+        if (streams.isEmpty()) return null
+        val live = streams.filterNot { it.title.contains("[OFFLINE]", ignoreCase = true) }
+        return (live.ifEmpty { streams }).maxByOrNull { ChannelNameNormalizer.normalize(it.title).qualityRank }
+    }
+
+    private fun fixupName(raw: String): String =
+        NAME_FIXUPS.entries.fold(raw) { acc, (wrong, right) -> acc.replace(wrong, right, ignoreCase = true) }
 
     private fun normalized(
         channels: List<Channel>,

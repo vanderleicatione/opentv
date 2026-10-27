@@ -107,7 +107,15 @@ class StremioAddonsViewModel(app: Application) : AndroidViewModel(app) {
         if (_refresh.value is Refresh.Running) return
         viewModelScope.launch {
             _refresh.value = Refresh.Running
-            val result = graph.catalogRepository.syncStremioAddons(System.currentTimeMillis())
+            val now = System.currentTimeMillis()
+            val result = graph.catalogRepository.syncStremioAddons(now)
+            if (result is CatalogRepository.SyncResult.Success) {
+                // Light up the EPG: turn on the free BR guides and match them to the new channels.
+                runCatching {
+                    graph.epgRepository.enableBrazilFeeds()
+                    graph.epgRepository.syncAll(now) // force=false: respects the 6h interval between presses
+                }
+            }
             runCatching { app.opentv.tif.TifSync.sync(getApplication<Application>()) }
             _refresh.value = when (result) {
                 is CatalogRepository.SyncResult.Success -> Refresh.Done(result.channelCount)
