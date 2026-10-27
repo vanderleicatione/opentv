@@ -17,15 +17,15 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.opentv.core.ServiceLocator
-import app.opentv.data.repo.CatalogRepository
 import java.util.concurrent.TimeUnit
 
 /**
- * Background refresh of the catalogue and the guide.
+ * Background refresh of the EPG guide, mirrored into Live Channels.
  *
- * Runs on WorkManager rather than a foreground timer so it survives the app being killed,
- * which on a TV box happens constantly. Failures return [Result.retry] with WorkManager's
- * exponential backoff — the app never hammers a provider that is already struggling.
+ * The Stremio channel list itself is resolved only by the user's explicit "refresh" (its links
+ * carry short-lived tokens and resolving hundreds of streams is slow), so this periodic job just
+ * keeps the guide current and re-publishes it to the TV Input Framework. Runs on WorkManager so it
+ * survives the app being killed, which on a TV box happens constantly.
  */
 class SyncWorker(
     context: Context,
@@ -35,41 +35,19 @@ class SyncWorker(
     override suspend fun doWork(): Result {
         val graph = ServiceLocator.get(applicationContext)
         val now = System.currentTimeMillis()
-        val sources = graph.sourceRepository.enabled()
-        if (sources.isEmpty()) return Result.success()
 
-        var anyFailed = false
-
-        for (source in sources) {
-            when (val result = graph.catalogRepository.sync(source, now)) {
-                is CatalogRepository.SyncResult.Success ->
-                    Log.i(TAG, "Catalogue for ${source.name}: ${result.channelCount} channels")
-                is CatalogRepository.SyncResult.Failed -> {
-                    anyFailed = true
-                    Log.w(TAG, "Catalogue for ${source.name} failed: ${result.reason}")
-                }
-            }
-
-        }
-
-        // Guides sync as one pass across every enabled feed — provider guides, built-in
-        // free sources and user URLs merge into a single guide, then the matcher runs.
+        // Guides sync as one pass across every enabled feed, then the matcher runs.
         val summary = graph.epgRepository.syncAll(now)
-        if (summary.feedsFailed > 0) anyFailed = true
         Log.i(
             TAG,
             "Guide: ${summary.programmesWritten} programmes from ${summary.feedsSucceeded} " +
                 "feed(s), ${summary.channelsMatched}/${summary.channelsTotal} channels matched",
         )
 
-        // Book any newly-revealed series-link airings from this fresh guide.
-        runCatching { graph.recordingEngine.rescanSeriesRules() }
-
-        // Mirror the refreshed channels + guide into Live Channels (no-ops off a TV box).
+        // Mirror the refreshed guide into Live Channels (no-ops off a TV box).
         runCatching { app.opentv.tif.TifSync.sync(applicationContext) }
 
-        // A partial failure is still a retry — but the user keeps everything already on disk.
-        return if (anyFailed) Result.retry() else Result.success()
+        return if (summary.feedsFailed > 0) Result.retry() else Result.success()
     }
 
     companion object {

@@ -40,9 +40,7 @@ import kotlinx.coroutines.withContext
  * Live Channels owns the surface and the guide; this service's only job is: given the channel the
  * user landed on, play its stream onto that surface. It reuses the app's streaming HTTP client and
  * the same URL-resolution path the in-app player uses (so Stalker channels, which mint a URL per
- * play, still work), but keeps its *own* small [ExoPlayer] — the in-app [app.opentv.player.PlayerController]
- * is built around a Compose screen, not a bare framework [Surface], and dragging it in here would
- * couple the two for no gain.
+ * play, still work), but keeps its *own* small [ExoPlayer] built around a bare framework [Surface].
  */
 @OptIn(UnstableApi::class)
 class OpenTvInputService : TvInputService() {

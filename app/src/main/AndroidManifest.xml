@@ -98,39 +98,6 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name="androidx.media3.session.MediaSessionService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
-
-        <!--
-          Keeps a recording running when the user leaves the player or the screen sleeps.
-          Typed mediaPlayback (not dataSync) so long captures aren't cut off by Android 14's
-          six-hour daily dataSync cap — recording live TV is a media task.
-        -->
-        <service
-            android:name=".recording.RecordingService"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
-
-        <!-- Starts a booked recording when its alarm fires; re-arms bookings after a reboot. -->
-        <receiver
-            android:name=".recording.RecordingAlarmReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
-        <!-- Fires a programme reminder when its alarm goes off; re-arms reminders after a reboot. -->
-        <receiver
-            android:name=".reminders.ReminderAlarmReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
-
         <!--
           TV Input Framework input. Live Channels binds this service to play an OpenTV channel the
           user tuned to, and launches the setup activity to add/re-scan the input. BIND_TV_INPUT

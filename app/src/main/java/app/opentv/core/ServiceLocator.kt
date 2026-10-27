@@ -12,10 +12,6 @@ import app.opentv.data.remote.StremioClient
 import app.opentv.data.remote.XtreamApi
 import app.opentv.data.repo.CatalogRepository
 import app.opentv.data.repo.EpgRepository
-import app.opentv.data.repo.RecordingRepository
-import app.opentv.data.repo.ReminderRepository
-import app.opentv.data.repo.SourceRepository
-import app.opentv.recording.RecordingEngine
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 
@@ -82,10 +78,6 @@ object ServiceLocator {
         /** Neutral Stremio add-on protocol client. Talks only to user-added manifest URLs. */
         val stremioClient: StremioClient by lazy { StremioClient(httpClient) }
 
-        val sourceRepository: SourceRepository by lazy {
-            SourceRepository(database.sources(), xtreamApi, stalkerApi)
-        }
-
         val catalogRepository: CatalogRepository by lazy {
             CatalogRepository(
                 sourceDao = database.sources(),
@@ -118,20 +110,5 @@ object ServiceLocator {
         val playbackPositions get() = database.positions()
 
         val profiles get() = database.profiles()
-
-        val recordingRepository: RecordingRepository by lazy {
-            RecordingRepository(database.recordings(), database.seriesRules())
-        }
-
-        val reminderRepository: ReminderRepository by lazy {
-            ReminderRepository(database.reminders())
-        }
-
-        val recordingEngine: RecordingEngine by lazy {
-            RecordingEngine(
-                appContext, recordingRepository, sourceRepository, settings,
-                database.channels(), epgRepository,
-            )
-        }
     }
 }
