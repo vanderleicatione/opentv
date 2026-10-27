@@ -32,6 +32,7 @@ class ChannelThemeTest {
 
     @Test fun `unmatched falls back to Variedades`() = assertThat(ChannelTheme.themeOf("Canal Qualquer")).isEqualTo("Variedades")
 
-    @Test fun `excluded set is what we drop`() =
+    @Test fun `excluded set is what we drop`() {
         assertThat(ChannelTheme.EXCLUDED).containsExactly("24 Horas", "Internacional", "Adultos", "Abertos")
+    }
 }
