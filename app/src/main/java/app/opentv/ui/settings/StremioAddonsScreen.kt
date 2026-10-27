@@ -157,6 +157,38 @@ fun StremioAddonsScreen(onBack: () -> Unit) {
 
         Spacer(Modifier.height(16.dp))
 
+        // On-TV "refresh": primary action, kept above the URL field so the D-pad reaches it. A
+        // focused OutlinedTextField on Android TV eats DPAD up/down, trapping focus inside it.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { viewModel.refreshList() },
+                enabled = addons.isNotEmpty() && refresh !is StremioAddonsViewModel.Refresh.Running,
+            ) { Text("Atualizar lista de canais") }
+            Spacer(Modifier.width(14.dp))
+            when (val r = refresh) {
+                is StremioAddonsViewModel.Refresh.Running -> {
+                    CircularProgressIndicator(modifier = Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Gerando lista…", style = MaterialTheme.typography.bodyMedium)
+                }
+                is StremioAddonsViewModel.Refresh.Done ->
+                    Text(
+                        "${r.count} canais gerados",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                is StremioAddonsViewModel.Refresh.Failed ->
+                    Text(
+                        r.reason,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                StremioAddonsViewModel.Refresh.Idle -> {}
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
         OutlinedTextField(
             value = input,
             onValueChange = {
@@ -197,37 +229,6 @@ fun StremioAddonsScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 StremioAddonsViewModel.Status.Idle -> {}
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        // On-TV "refresh": generate the unified channel list from the add-ons and save it in OpenTV.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Button(
-                onClick = { viewModel.refreshList() },
-                enabled = addons.isNotEmpty() && refresh !is StremioAddonsViewModel.Refresh.Running,
-            ) { Text("Atualizar lista de canais") }
-            Spacer(Modifier.width(14.dp))
-            when (val r = refresh) {
-                is StremioAddonsViewModel.Refresh.Running -> {
-                    CircularProgressIndicator(modifier = Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Gerando lista…", style = MaterialTheme.typography.bodyMedium)
-                }
-                is StremioAddonsViewModel.Refresh.Done ->
-                    Text(
-                        "${r.count} canais gerados",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                is StremioAddonsViewModel.Refresh.Failed ->
-                    Text(
-                        r.reason,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                StremioAddonsViewModel.Refresh.Idle -> {}
             }
         }
 
