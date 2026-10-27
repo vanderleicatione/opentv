@@ -44,6 +44,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import app.opentv.R
 import app.opentv.core.ServiceLocator
 import app.opentv.data.model.StremioAddon
+import app.opentv.data.repo.CatalogRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,6 +86,35 @@ class StremioAddonsViewModel(app: Application) : AndroidViewModel(app) {
     fun remove(addon: StremioAddon) = graph.settings.removeStremioAddon(addon.manifestUrl)
 
     fun clearStatus() { _status.value = Status.Idle }
+
+    /** Progress of the "generate channel list from the add-ons" action. */
+    sealed interface Refresh {
+        data object Idle : Refresh
+        data object Running : Refresh
+        data class Done(val count: Int) : Refresh
+        data class Failed(val reason: String) : Refresh
+    }
+
+    private val _refresh = MutableStateFlow<Refresh>(Refresh.Idle)
+    val refresh: StateFlow<Refresh> = _refresh.asStateFlow()
+
+    /**
+     * Run every add-on through [CatalogRepository.syncStremioAddons]: resolve each channel to a
+     * direct URL, drop open/offline ones, store the list, then mirror it to Live Channels. This is
+     * the on-TV "refresh" that replaces generating the list on a PC.
+     */
+    fun refreshList() {
+        if (_refresh.value is Refresh.Running) return
+        viewModelScope.launch {
+            _refresh.value = Refresh.Running
+            val result = graph.catalogRepository.syncStremioAddons(System.currentTimeMillis())
+            runCatching { app.opentv.tif.TifSync.sync(getApplication<Application>()) }
+            _refresh.value = when (result) {
+                is CatalogRepository.SyncResult.Success -> Refresh.Done(result.channelCount)
+                is CatalogRepository.SyncResult.Failed -> Refresh.Failed(result.reason)
+            }
+        }
+    }
 }
 
 /**
@@ -97,6 +127,7 @@ fun StremioAddonsScreen(onBack: () -> Unit) {
     val viewModel: StremioAddonsViewModel = viewModel()
     val addons by viewModel.addons.collectAsState()
     val status by viewModel.status.collectAsState()
+    val refresh by viewModel.refresh.collectAsState()
     var input by remember { mutableStateOf("") }
 
     // Clear the field once an add-on validates and is stored — done as an effect, not during
@@ -166,6 +197,37 @@ fun StremioAddonsScreen(onBack: () -> Unit) {
                         color = MaterialTheme.colorScheme.error,
                     )
                 StremioAddonsViewModel.Status.Idle -> {}
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // On-TV "refresh": generate the unified channel list from the add-ons and save it in OpenTV.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { viewModel.refreshList() },
+                enabled = addons.isNotEmpty() && refresh !is StremioAddonsViewModel.Refresh.Running,
+            ) { Text("Atualizar lista de canais") }
+            Spacer(Modifier.width(14.dp))
+            when (val r = refresh) {
+                is StremioAddonsViewModel.Refresh.Running -> {
+                    CircularProgressIndicator(modifier = Modifier.height(20.dp).width(20.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Gerando lista…", style = MaterialTheme.typography.bodyMedium)
+                }
+                is StremioAddonsViewModel.Refresh.Done ->
+                    Text(
+                        "${r.count} canais gerados",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                is StremioAddonsViewModel.Refresh.Failed ->
+                    Text(
+                        r.reason,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                StremioAddonsViewModel.Refresh.Idle -> {}
             }
         }
 

@@ -27,6 +27,7 @@ import app.opentv.data.parser.ChannelNameNormalizer
 import app.opentv.data.parser.M3uParser
 import app.opentv.data.parser.VodTitleCleaner
 import app.opentv.data.remote.StalkerApi
+import app.opentv.data.remote.StremioClient
 import app.opentv.data.remote.TmdbClient
 import app.opentv.data.remote.XtreamApi
 import kotlinx.coroutines.CancellationException
@@ -80,6 +81,22 @@ data class MovieVariantGroup(
 /** A standalone 4-digit release year (19xx/20xx) as it appears inside a VOD title. */
 private val VOD_YEAR = Regex("""\b(19|20)\d{2}\b""")
 
+/** The synthetic source that holds channels generated from the user's Stremio add-ons. */
+private const val STREMIO_SOURCE_URL = "stremio://addons"
+
+/** One User-Agent for every add-on channel — most live add-ons (e.g. Fenix) want a VLC UA. */
+private const val STREMIO_UA = "VLC/3.0.18 LibVLC/3.0.18"
+
+/**
+ * "Canais abertos" (free-to-air broadcast) to drop from the add-on list, ported from the user's
+ * atualizar.py "Abertos" group. Matched against the channel name, case-insensitive.
+ */
+private val OPEN_CHANNELS = Regex(
+    "rede globo|\\bglobo\\b|rbs tv|\\brecord\\b(?! news)|\\bsbt\\b|\\bband\\b(?! ?sports)|redetv|rede tv|" +
+        "tv (brasil|cultura|gazeta|meio norte)|rede (minas|brasil)|\\btve\\b|amazon sat|\\bngt\\b",
+    RegexOption.IGNORE_CASE,
+)
+
 /**
  * Collapses obvious quality variants of the same film — "The Godfather 1972 HD" and
  * "The Godfather 4K" — into one entry with switchable tiers, the VOD analogue of a channel's
@@ -127,6 +144,7 @@ class CatalogRepository(
     private val positionDao: PlaybackPositionDao,
     private val api: XtreamApi,
     private val stalkerApi: StalkerApi,
+    private val stremioClient: StremioClient,
     private val http: OkHttpClient,
     private val settings: AppSettings,
 ) {
@@ -629,6 +647,9 @@ class CatalogRepository(
 
     /** Live channels only — the fast path so the guide can show before VOD and the guide load. */
     suspend fun syncLive(source: Source, nowUtcMillis: Long): SyncResult = withContext(Dispatchers.IO) {
+        // The synthetic add-on source is refreshed only by the user's button (syncStremioAddons),
+        // never by the periodic/background sync — its url is not a real playlist to fetch.
+        if (source.url == STREMIO_SOURCE_URL) return@withContext SyncResult.Success(0, 0, 0)
         try {
             when (source.kind) {
                 SourceKind.XTREAM -> syncXtreamLive(source, nowUtcMillis)
@@ -790,6 +811,55 @@ class CatalogRepository(
      * variants of a channel into a single row and is the join key for EPG matching, and
      * [Channel.displayName] is the cleaned name the UI shows instead of `UK| BBC ONE FHD`.
      */
+    /**
+     * Build the live-channel list from the user's Stremio add-ons and store it, so OpenTV and the
+     * TV Input Framework bridge serve pre-resolved direct URLs instead of resolving a Stremio stream
+     * at tune time — the resolved form plays far more reliably. The user triggers this from the
+     * add-ons screen; re-run when links stop working (add-on stream URLs often carry a short-lived
+     * token). Open broadcast channels are dropped and [OFFLINE]-marked options skipped.
+     *
+     * shortcut: one User-Agent (VLC) for the whole synthetic source, and no mass dead-link probe
+     * (it trusts the add-on's [OFFLINE] marker); revisit if some channels need their own header or
+     * the add-on lists stale links as online.
+     */
+    suspend fun syncStremioAddons(nowUtcMillis: Long): SyncResult = withContext(Dispatchers.IO) {
+        val addons = settings.stremioAddons.value
+        if (addons.isEmpty()) return@withContext SyncResult.Failed("Nenhum add-on configurado.", null)
+
+        val sourceId = sourceDao.byUrl(STREMIO_SOURCE_URL)?.id
+            ?: sourceDao.insert(
+                Source(name = "Add-ons", kind = SourceKind.M3U, url = STREMIO_SOURCE_URL, userAgent = STREMIO_UA),
+            )
+
+        val channels = mutableListOf<Channel>()
+        val seen = HashSet<String>()
+        for (addon in addons) {
+            for (ch in runCatching { stremioClient.tvChannels(addon) }.getOrDefault(emptyList())) {
+                if (!seen.add(ch.id)) continue
+                if (OPEN_CHANNELS.containsMatchIn(ch.name)) continue // drop "canais abertos"
+                val stream = runCatching { stremioClient.streams(addon.manifestUrl, addon.name, "tv", ch.id) }
+                    .getOrDefault(emptyList())
+                    .firstOrNull { !it.title.contains("[OFFLINE]", ignoreCase = true) }
+                    ?: continue
+                channels += Channel(
+                    sourceId = sourceId,
+                    streamId = ch.id,
+                    name = ch.name,
+                    categoryId = null,
+                    logoUrl = ch.logo,
+                    epgChannelId = null,
+                    number = null,
+                    streamUrl = stream.url,
+                )
+            }
+        }
+        if (channels.isEmpty()) return@withContext SyncResult.Failed("Nenhum canal resolvido dos add-ons.", null)
+
+        channelDao.replaceCatalogue(sourceId, normalized(channels, emptyMap()), nowUtcMillis)
+        sourceDao.markCatalogSynced(sourceId, nowUtcMillis)
+        SyncResult.Success(channels.size, 0, 0)
+    }
+
     private fun normalized(
         channels: List<Channel>,
         categoryNames: Map<String, String>,

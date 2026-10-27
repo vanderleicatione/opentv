@@ -98,34 +98,22 @@ class OpenTvInputService : TvInputService() {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
-                val resolved: Pair<String, Map<String, String>>? = withContext(Dispatchers.IO) {
-                    if (data.startsWith(TifSync.STREMIO_PREFIX + TifSync.SEP)) {
-                        // Stremio channel: stremio<SEP>manifestUrl<SEP>addonName<SEP>channelId.
-                        // Resolve the playable URL on demand via the add-on's stream resource.
-                        val p = data.split(TifSync.SEP)
-                        if (p.size < 4) return@withContext null
-                        val streams = graph.stremioClient.streams(p[1], p[2], "tv", p[3])
-                        // Skip options the add-on marked offline; fall back to the first if all are.
-                        val stream = streams.firstOrNull { !it.title.contains("[OFFLINE]", ignoreCase = true) }
-                            ?: streams.firstOrNull() ?: return@withContext null
-                        // Use the stream's own request headers (e.g. its required VLC User-Agent);
-                        // only when it supplies none do we fall back to our default User-Agent.
-                        val headers = stream.headers.ifEmpty { mapOf("User-Agent" to Source.DEFAULT_USER_AGENT) }
-                        stream.url to headers
-                    } else {
-                        val channel = data.toLongOrNull()
-                            ?.let { graph.database.channels().byId(it) } ?: return@withContext null
-                        val source = graph.database.sources().byId(channel.sourceId)
-                        graph.catalogRepository.resolvePlaybackUrl(channel, source) to
-                            mapOf("User-Agent" to (source?.userAgent ?: Source.DEFAULT_USER_AGENT))
-                    }
+                // The channel row stores its Room `channels` id; resolve it to a playable URL. For
+                // the add-on list this is already a direct URL (CatalogRepository resolved it at
+                // refresh time); Stalker still mints its URL here on demand.
+                val resolved: Pair<String, String>? = withContext(Dispatchers.IO) {
+                    val channel = data.toLongOrNull()
+                        ?.let { graph.database.channels().byId(it) } ?: return@withContext null
+                    val source = graph.database.sources().byId(channel.sourceId)
+                    graph.catalogRepository.resolvePlaybackUrl(channel, source) to
+                        (source?.userAgent ?: Source.DEFAULT_USER_AGENT)
                 }
-                val (url, headers) = resolved ?: run {
+                val (url, userAgent) = resolved ?: run {
                     notifyVideoUnavailable(TvInputManager.VIDEO_UNAVAILABLE_REASON_UNKNOWN)
                     return@launch
                 }
 
-                httpFactory.setDefaultRequestProperties(headers)
+                httpFactory.setDefaultRequestProperties(mapOf("User-Agent" to userAgent))
                 player.setMediaItem(MediaItem.fromUri(url))
                 player.prepare()
             }

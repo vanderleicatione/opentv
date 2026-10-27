@@ -97,6 +97,7 @@ object ServiceLocator {
                 positionDao = database.positions(),
                 api = xtreamApi,
                 stalkerApi = stalkerApi,
+                stremioClient = stremioClient,
                 http = httpClient,
                 settings = settings,
             )

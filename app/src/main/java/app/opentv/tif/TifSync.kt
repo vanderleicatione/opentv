@@ -51,15 +51,6 @@ object TifSync {
     /** How far ahead to publish programmes per channel. Live Channels only needs "now + next few". */
     private const val PROGRAMMES_PER_CHANNEL = 50
 
-    /**
-     * How a channel row's [TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA] encodes its origin so
-     * onTune can play it back. A plain decimal is a Room `channels` row id (Xtream/M3U/Stalker). A
-     * value starting with [STREMIO_PREFIX] is a Stremio add-on channel, as
-     * `stremio<SEP>manifestUrl<SEP>addonName<SEP>channelId`, resolved to a URL at tune time.
-     */
-    const val STREMIO_PREFIX = "stremio"
-    const val SEP = '\u001f' // unit separator — never appears in a URL or channel id
-
     /** One sync at a time: the app-start trigger and the periodic worker can both fire this. */
     private val lock = Mutex()
 
@@ -87,26 +78,12 @@ object TifSync {
         val now = System.currentTimeMillis()
 
         // channels table is live channels only (VOD/series live in their own tables). Hidden
-        // channels are ones the user chose not to see, so they stay out of the guide too.
+        // channels are ones the user chose not to see, so they stay out of the guide too. Channels
+        // generated from Stremio add-ons are already stored here as a synthetic source (see
+        // CatalogRepository.syncStremioAddons), so there is nothing add-on-specific to do here.
         val channels = runCatching { graph.database.channels().allForMatching() }
             .getOrElse { Log.w(TAG, "channel read failed", it); return 0 }
             .filter { !it.hidden }
-
-        // Stremio add-ons live outside the channels table (they are a browse surface, not a
-        // SourceKind), so their `tv` catalogues are fetched here and mirrored too. Best-effort and
-        // off the delete path: a flaky add-on yields an empty list, never an aborted sync.
-        val stremioChannels = runCatching {
-            withContext(Dispatchers.IO) {
-                graph.settings.stremioAddons.value.flatMap { graph.stremioClient.tvChannels(it) }
-            }
-        }.getOrElse { Log.w(TAG, "stremio catalogue read failed", it); emptyList() }
-
-        Log.i(
-            TAG,
-            "TIF sync: ${channels.size} db channel(s), " +
-                "${graph.settings.stremioAddons.value.size} stremio addon(s), " +
-                "${stremioChannels.size} stremio channel(s)",
-        )
 
         // All the provider writes run on IO, never the caller's thread. The setup activity calls
         // this from its main-thread lifecycle scope, and doing thousands of inserts there blocks the
@@ -151,22 +128,7 @@ object TifSync {
                 resolver.bulkInsert(TvContract.Programs.CONTENT_URI, rows)
             }
 
-            // Stremio channels: no XMLTV guide exists for them, so they carry no programmes, which
-            // means we never need their row ids back — so they go in one bulkInsert instead of a
-            // per-row insert. A single add-on catalogue can be hundreds or thousands of channels,
-            // where row-at-a-time would crawl.
-            val stremioRows = stremioChannels.map { ch ->
-                number++
-                val key = "$STREMIO_PREFIX$SEP${ch.addonManifestUrl}$SEP${ch.addonName}$SEP${ch.id}"
-                channelRow(inputId, number, ch.name).apply {
-                    put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, key.toByteArray())
-                }
-            }.toTypedArray()
-            if (stremioRows.isNotEmpty()) {
-                published += resolver.bulkInsert(TvContract.Channels.CONTENT_URI, stremioRows)
-            }
-
-                Log.i(TAG, "Published $published channels to Live Channels (${stremioChannels.size} via Stremio)")
+                Log.i(TAG, "Published $published channels to Live Channels")
                 published
             }.getOrElse { Log.w(TAG, "TIF sync failed", it); 0 }
         }
