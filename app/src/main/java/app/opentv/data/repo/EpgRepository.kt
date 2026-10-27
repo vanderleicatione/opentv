@@ -390,6 +390,10 @@ class EpgRepository(
                 "https://epgshare01.online/epgshare01/epg_ripper_BR1.xml.gz",
             "Brasil — BrazilTVEPG" to
                 "https://raw.githubusercontent.com/limaalef/BrazilTVEPG/refs/heads/main/epg.xml",
+            // Claro TV line-up (163 pay-TV channels): matches IPTV-style names far better than the
+            // broadcast guides, which is what most add-on channels are.
+            "Brasil — Claro (BrazilTVEPG)" to
+                "https://raw.githubusercontent.com/limaalef/BrazilTVEPG/refs/heads/main/claro.xml",
             "UK — Freeview (free-to-air)" to
                 "https://raw.githubusercontent.com/dp247/Freeview-EPG/master/epg.xml",
             "UK — epgshare01 (Sky lineup)" to
