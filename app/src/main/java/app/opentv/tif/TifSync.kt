@@ -12,6 +12,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.tv.TvContract
 import android.net.Uri
+import android.provider.BaseColumns
 import android.util.Log
 import app.opentv.core.ServiceLocator
 import app.opentv.data.model.shownName
@@ -33,16 +34,17 @@ import kotlinx.coroutines.withContext
  * our own input id. We cannot go the other way (pull the antenna into OpenTV): the physical tuner
  * is readable only by the system TV app, never by a third-party package.
  *
- * ## Strategy: full replace
+ * ## Strategy: diff, not wipe-and-reinsert
  *
- * Each sync wipes this input's rows and re-inserts them. Diffing (insert-new / update-changed /
- * delete-stale, matched on internal id) would preserve the row ids and any per-channel state Live
- * Channels keeps, but it is a great deal more code for a first version. A full replace is a handful
- * of lines and always correct; the only visible cost is that channels blink out and back during a
- * sync, and a hide/reorder done *inside* Live Channels is reset. Revisit if that becomes a problem.
+ * Each sync keeps the existing rows and only updates changed channels, inserts new ones and deletes
+ * stale ones, matched on our internal channel id (stored in COLUMN_INTERNAL_PROVIDER_DATA). This
+ * preserves the framework row ids and, crucially, never empties the input mid-sync: on this
+ * project's target boxes (TCL "tguard") the process is killed the instant it backgrounds, and the
+ * old wipe-then-reinsert left the guide with zero channels whenever the re-insert never ran. Stale
+ * channels are removed last, so an interrupted sync keeps extra (still-valid) channels, never none.
  *
- * shortcut: full replace + per-row channel insert; fine for typical live lists (hundreds), revisit
- * if someone pushes tens of thousands of channels into the guide.
+ * shortcut: per-channel programme replace (delete + bulkInsert) each sync; fine for typical live
+ * lists (hundreds), revisit if someone pushes tens of thousands of channels into the guide.
  */
 object TifSync {
 
@@ -91,42 +93,78 @@ object TifSync {
         // mid-sync — exactly what left the input with zero channels.
         withContext(Dispatchers.IO) {
             runCatching {
-                // Deleting a channel cascades to its programmes in the TV provider, so clearing this
-                // input's channels clears its whole guide in one call — no separate Programs delete.
-                resolver.delete(channelsForInput(inputId), null, null)
-
-            var number = 0
-            var published = 0
-            channels.forEach { channel ->
-                number++
-                val channelValues = channelRow(inputId, channel.number ?: number, channel.shownName)
-                    .apply {
-                        // Our own id, so onTune can map the framework's channel Uri back to a Channel
-                        // row. COLUMN_INTERNAL_PROVIDER_DATA (a BLOB) exists since API 21; the tidier
-                        // COLUMN_INTERNAL_PROVIDER_ID only arrived in API 26, and minSdk here is 23.
-                        put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, channel.id.toString().toByteArray())
+                // Read the rows already published for this input, keyed by our internal channel id, so
+                // we can update/keep them in place instead of wiping everything up front (see class doc).
+                val existing = HashMap<String, Long>()
+                resolver.query(
+                    channelsForInput(inputId),
+                    arrayOf(BaseColumns._ID, TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA),
+                    null, null, null,
+                )?.use { cursor ->
+                    val idIndex = cursor.getColumnIndexOrThrow(BaseColumns._ID)
+                    val keyIndex = cursor.getColumnIndexOrThrow(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA)
+                    while (cursor.moveToNext()) {
+                        val key = cursor.getBlob(keyIndex)?.let { String(it) } ?: continue
+                        existing[key] = cursor.getLong(idIndex)
                     }
-                val channelUri = resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) ?: return@forEach
-                published++
+                }
 
-                val epgId = channel.epgCandidates.firstOrNull() ?: return@forEach
-                val programmes = runCatching {
-                    graph.database.programmes().upcoming(epgId, now, PROGRAMMES_PER_CHANNEL)
-                }.getOrDefault(emptyList())
-                if (programmes.isEmpty()) return@forEach
-
-                val channelRowId = ContentUris.parseId(channelUri)
-                val rows = programmes.map { p ->
-                    ContentValues().apply {
-                        put(TvContract.Programs.COLUMN_CHANNEL_ID, channelRowId)
-                        put(TvContract.Programs.COLUMN_TITLE, p.title)
-                        put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, p.startUtcMillis)
-                        put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, p.endUtcMillis)
-                        p.description?.let { put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, it) }
+                val seen = HashSet<String>()
+                var number = 0
+                var published = 0
+                channels.forEach { channel ->
+                    number++
+                    val key = channel.id.toString()
+                    seen += key
+                    val channelValues = channelRow(inputId, channel.number ?: number, channel.shownName)
+                        .apply {
+                            // Our own id, so onTune can map the framework's channel Uri back to a Channel
+                            // row. COLUMN_INTERNAL_PROVIDER_DATA (a BLOB) exists since API 21; the tidier
+                            // COLUMN_INTERNAL_PROVIDER_ID only arrived in API 26, and minSdk here is 23.
+                            put(TvContract.Channels.COLUMN_INTERNAL_PROVIDER_DATA, key.toByteArray())
+                        }
+                    val existingRowId = existing[key]
+                    val channelRowId = if (existingRowId != null) {
+                        resolver.update(
+                            ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, existingRowId),
+                            channelValues, null, null,
+                        )
+                        existingRowId
+                    } else {
+                        val uri = resolver.insert(TvContract.Channels.CONTENT_URI, channelValues) ?: return@forEach
+                        ContentUris.parseId(uri)
                     }
-                }.toTypedArray()
-                resolver.bulkInsert(TvContract.Programs.CONTENT_URI, rows)
-            }
+                    published++
+
+                    // Replace just this channel's programmes. Scoped to one channel, so an interrupted
+                    // sync only blanks that channel's guide, never the channel list itself.
+                    resolver.delete(TvContract.buildProgramsUriForChannel(channelRowId), null, null)
+                    val epgId = channel.epgCandidates.firstOrNull() ?: return@forEach
+                    val programmes = runCatching {
+                        graph.database.programmes().upcoming(epgId, now, PROGRAMMES_PER_CHANNEL)
+                    }.getOrDefault(emptyList())
+                    if (programmes.isEmpty()) return@forEach
+
+                    val rows = programmes.map { p ->
+                        ContentValues().apply {
+                            put(TvContract.Programs.COLUMN_CHANNEL_ID, channelRowId)
+                            put(TvContract.Programs.COLUMN_TITLE, p.title)
+                            put(TvContract.Programs.COLUMN_START_TIME_UTC_MILLIS, p.startUtcMillis)
+                            put(TvContract.Programs.COLUMN_END_TIME_UTC_MILLIS, p.endUtcMillis)
+                            p.description?.let { put(TvContract.Programs.COLUMN_SHORT_DESCRIPTION, it) }
+                        }
+                    }.toTypedArray()
+                    resolver.bulkInsert(TvContract.Programs.CONTENT_URI, rows)
+                }
+
+                // Remove channels that are no longer in OpenTV — done last so a kill mid-sync keeps
+                // extra (still-valid) channels rather than losing any. Deleting a channel cascades to
+                // its programmes in the TV provider, so there is no separate Programs cleanup.
+                existing.forEach { (key, rowId) ->
+                    if (key !in seen) {
+                        resolver.delete(ContentUris.withAppendedId(TvContract.Channels.CONTENT_URI, rowId), null, null)
+                    }
+                }
 
                 Log.i(TAG, "Published $published channels to Live Channels")
                 published

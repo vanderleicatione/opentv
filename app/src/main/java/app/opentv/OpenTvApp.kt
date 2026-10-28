@@ -76,7 +76,11 @@ class OpenTvApp : Application(), ImageLoaderFactory {
 
             // Keep the Live Channels guide in step with what the app just synced, so a box that
             // added the OpenTV input sees fresh channels/EPG on launch. No-ops off a TV device.
-            runCatching { app.opentv.tif.TifSync.sync(this@OpenTvApp) }
+            // Via the foreground service, not an inline TifSync.sync(): on tguard-style boxes this
+            // appScope coroutine dies the moment the launcher returns, which would cut the sync short;
+            // the service's ongoing notification lets it run to completion. runCatching guards the
+            // Android 12+ "can't start a FGS from the background" case (periodic worker then catches up).
+            runCatching { app.opentv.tif.TifSyncService.start(this@OpenTvApp) }
         }
     }
 }
